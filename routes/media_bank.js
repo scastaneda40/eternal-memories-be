@@ -1,94 +1,51 @@
 const express = require("express");
-const multer = require("multer");
 const { createClient } = require("@supabase/supabase-js");
 
 const router = express.Router();
 
-// Configure Multer for Memory Storage
-const upload = multer({ storage: multer.memoryStorage() });
-
-// Initialize Supabase Client
+// ✅ Initialize Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY // ⚠️ Use SERVICE ROLE for admin access
 );
 
-// Route to add media to the Media Bank
-router.post("/", upload.single("file"), async (req, res) => {
-  console.log("Media Bank upload endpoint called");
-
+router.get("/", async (req, res) => {
   try {
-    const { user_id, profile_id, meta } = req.body;
+    const { user_id } = req.query; // ✅ Get user ID from query params
 
     if (!user_id) {
-      console.error("User ID is missing");
-      return res.status(400).send({ error: "User ID is required" });
+      return res.status(400).json({ error: "User ID is required" });
     }
 
-    if (!profile_id) {
-      console.error("Profile ID is missing");
-      return res.status(400).send({ error: "Profile ID is required" });
+    console.log("🔍 Fetching media for user:", user_id);
+
+    // ✅ Query `media_bank` table in Supabase Database (not Storage)
+    const { data, error } = await supabase
+      .from("media_bank") // ✅ This is the DB table (not storage)
+      .select("*")
+      .eq("user_id", user_id);
+
+    if (error) {
+      console.error("❌ Error fetching media from DB:", error.message);
+      return res.status(500).json({ error: error.message });
     }
 
-    const file = req.file;
-    if (!file) {
-      console.error("No file uploaded");
-      return res.status(400).send({ error: "No file uploaded" });
-    }
+    // ✅ Fetch Public URLs for each file from Supabase Storage
+    const media = data.map((file) => ({
+      id: file.id,
+      name: file.name, // ✅ Use correct field name for the file
+      url: file.url
+    }));
 
-    const filePath = `media_bank/${Date.now()}_${file.originalname}`;
+    console.log("✅ Successfully fetched media:", media);
+    return res.json({ media });
 
-    // Upload file to Supabase storage
-    const { data, error: uploadError } = await supabase.storage
-      .from("eternal-moment-uploads")
-      .upload(filePath, file.buffer, {
-        contentType: file.mimetype,
-      });
-
-    if (uploadError) {
-      console.error("Supabase storage upload error:", uploadError);
-      return res.status(403).send({ error: uploadError.message });
-    }
-
-    console.log("File uploaded successfully:", data);
-
-    // Generate public URL
-    const { data: publicUrlData } = supabase.storage
-      .from("eternal-moment-uploads")
-      .getPublicUrl(filePath);
-
-    const fileUrl = publicUrlData?.publicUrl;
-
-    if (!fileUrl) {
-      console.error("Failed to generate public URL");
-      return res.status(500).send({ error: "Failed to generate public URL" });
-    }
-
-    console.log("Generated file URL:", fileUrl);
-
-    // Save metadata to the media_bank table
-    console.log("Saving media to the media_bank table...");
-    const { error: metadataError } = await supabase.from("media_bank").insert([
-      {
-        user_id,
-        profile_id,
-        file_url: fileUrl,
-        file_name: file.originalname,
-        meta: meta || null,
-      },
-    ]);
-
-    if (metadataError) {
-      console.error("Error saving media to media_bank:", metadataError);
-      return res.status(500).send({ error: metadataError.message });
-    }
-
-    console.log("Media saved successfully to the media_bank");
-    res.status(200).send({ message: "Media added to the media bank successfully" });
-  } catch (error) {
-    console.error("Media Bank upload endpoint error:", error);
-    res.status(500).send({ error: "Internal server error" });
+  } catch (err) {
+    console.error("❌ Server Error:", err.message);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
 module.exports = router;
+
+

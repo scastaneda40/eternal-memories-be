@@ -1,7 +1,12 @@
-const express = require("express");
-const { createClient } = require("@supabase/supabase-js");
+const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
+const multer = require('multer'); // Middleware for handling file uploads
+const path = require('path');
+const fs = require('fs');
+const mime = require('mime-types');
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() }); // Store in memory before upload
 
 // Initialize Supabase Client
 const supabase = createClient(
@@ -9,36 +14,59 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-router.post("/capsules", async (req, res) => {
-  const {
-    title,
-    description,
-    release_date,
-    timezone,
-    user_id,
-    privacy_id,
-    profile_id,
-    location, // Geometry: e.g., "POINT(-122.4194 37.7749)"
-    address,  // Human-readable address
-  } = req.body;
-
-  if (!title || !release_date || !timezone || !user_id || !privacy_id || !profile_id) {
-    console.error("Validation Error: Missing required fields.");
-    return res.status(400).json({ error: "Missing required fields." });
-  }
-
+async function uploadFileToSupabase(fileBuffer, originalName) {
   try {
-    console.log("Saving capsule with details:", {
+    const fileName = `${Date.now()}_${originalName}`;
+    const filePath = `uploads/${fileName}`;
+
+    const { data, error } = await supabase.storage
+      .from('eternal-moment-uploads') // ✅ Make sure this matches your storage bucket
+      .upload(filePath, fileBuffer, {
+        contentType: mime.lookup(originalName) || 'application/octet-stream',
+        upsert: false,
+      });
+
+    if (error) {
+      console.error(
+        `❌ Error uploading ${originalName} to Supabase:`,
+        error.message
+      );
+      return null;
+    }
+
+    return `https://lgyrbjjnuagmqcnmutfc.supabase.co/storage/v1/object/public/eternal-moment-uploads/${filePath}`;
+  } catch (err) {
+    console.error('❌ Unexpected error uploading file:', err.message);
+    return null;
+  }
+}
+
+router.post('/capsules', upload.array('mediaFiles'), async (req, res) => {
+  try {
+    const {
       title,
       description,
       release_date,
       timezone,
-      location,
-      address,
-    });
+      user_id,
+      privacy_level,
+      profile_id,
+    } = req.body;
 
-    const { data, error } = await supabase
-      .from("capsules")
+    if (
+      !title ||
+      !release_date ||
+      !timezone ||
+      !user_id ||
+      !privacy_level ||
+      !profile_id
+    ) {
+      return res.status(400).json({ error: 'Missing required fields.' });
+    }
+
+    // ✅ Step 1: Insert Capsule
+    const { data: capsuleData, error: capsuleError } = await supabase
+      .from('capsules')
       .insert([
         {
           title,
@@ -46,70 +74,162 @@ router.post("/capsules", async (req, res) => {
           release_date,
           timezone,
           user_id,
-          privacy_id,
+          privacy_level,
           profile_id,
-          location, // Save the location as a geometry point
-          address,  // Save the human-readable address
         },
       ])
       .select();
 
-    if (error) {
-      console.error("Supabase Error:", error);
-      return res.status(500).json({ error: "Failed to save capsule." });
+    if (capsuleError) {
+      console.error('Capsule Insertion Error:', capsuleError);
+      return res.status(500).json({ error: 'Failed to save capsule.' });
     }
 
-    console.log("Capsule saved successfully:", data[0]);
-    res.status(201).json(data[0]);
+    const newCapsule = capsuleData[0];
+    console.log('✅ Capsule created:', newCapsule);
+
+    let uploadedMedia = [];
+
+    // ✅ Step 2: Upload Media to Supabase Storage & Insert in `media_bank`
+    if (req.files && req.files.length > 0) {
+      uploadedMedia = await Promise.all(
+        req.files.map(async (file) => {
+          try {
+            // ✅ Upload file to Supabase and get the URL
+            const publicUrl = await uploadFileToSupabase(
+              file.buffer,
+              file.originalname
+            );
+
+            if (!publicUrl) {
+              console.error(
+                `❌ Failed to generate public URL for ${file.originalname}`
+              );
+              return null;
+            }
+
+            console.log('🔗 Generated public URL:', publicUrl);
+
+            // ✅ Insert media entry into media_bank
+            const { data: mediaData, error: mediaError } = await supabase
+              .from('media_bank')
+              .insert([
+                {
+                  url: publicUrl,
+                  media_type: file.mimetype.includes('image')
+                    ? 'photo'
+                    : 'video',
+                  user_id,
+                },
+              ])
+              .select();
+
+            if (mediaError) {
+              console.error('Database Insert Error:', mediaError);
+              return null;
+            }
+
+            return {
+              id: mediaData[0].id,
+              url: publicUrl, // ✅ Ensure the URL is included
+              media_type: mediaData[0].media_type,
+            };
+          } catch (err) {
+            console.error('Upload Exception:', err.message);
+            return null;
+          }
+        })
+      );
+
+      uploadedMedia = uploadedMedia.filter(Boolean); // ✅ Remove any failed uploads
+    }
+
+    // ✅ Step 3: Link Media to Capsule
+    if (uploadedMedia.length > 0) {
+      const mediaInsertData = uploadedMedia.map((media) => ({
+        capsule_id: newCapsule.id,
+        media_id: media.id,
+      }));
+
+      const { error: mediaLinkError } = await supabase
+        .from('capsule_media')
+        .insert(mediaInsertData);
+
+      if (mediaLinkError) {
+        console.error('Error linking media to capsule:', mediaLinkError);
+        return res
+          .status(500)
+          .json({ error: 'Failed to link media to capsule.' });
+      }
+    }
+
+    res.status(201).json({ ...newCapsule, mediaFiles: uploadedMedia });
   } catch (err) {
-    console.error("Unexpected Error:", err.message);
-    res.status(500).json({ error: "Server error occurred." });
+    console.error('Unexpected Error:', err.message);
+    res.status(500).json({ error: 'Server error occurred.' });
   }
 });
 
+router.get('/capsules', async (req, res) => {
+  const { user_id, profile_id } = req.query;
 
-router.get("/capsules", async (req, res) => {
-    const { user_id } = req.query;
-    console.log("Request received for user_id:", user_id);
   if (!user_id) {
-    console.error("Validation Error: Missing user_id query parameter.");
-    return res.status(400).json({ error: "Missing user_id query parameter." });
+    return res.status(400).json({ error: 'Missing user_id query parameter.' });
   }
 
   try {
-    console.log("Fetching capsules for user:", user_id);
+    console.log('🟢 Fetching capsules from the database...');
+    let query = supabase.from('capsules').select('*').eq('user_id', user_id);
 
-    const { data, error } = await supabase
-      .from("capsules")
-      .select("*")
-      .eq("user_id", user_id);
+    if (profile_id) {
+      query = query.eq('profile_id', profile_id);
+    }
 
-    if (error) throw error;
+    const { data: capsules, error: capsuleError } = await query;
 
-    console.log("Raw capsules data from DB:", data);
+    if (capsuleError) {
+      console.error('❌ Error fetching capsules:', capsuleError);
+      return res.status(500).json({ error: 'Failed to fetch capsules.' });
+    }
 
-    // Convert UTC release_date to the user's local timezone for display
-    const adjustedData = data.map((capsule) => {
-      const convertedDate = new Date(capsule.release_date).toLocaleString(undefined, {
-        timeZone: capsule.timezone,
-      });
-      console.log(`Converting release_date for capsule ${capsule.id}:`, {
-        original: capsule.release_date,
-        timezone: capsule.timezone,
-        converted: convertedDate,
-      });
+    // ✅ Fetch media files for each capsule
+    const enrichedCapsules = await Promise.all(
+      capsules.map(async (capsule) => {
+        const { data: capsuleMedia, error: mediaError } = await supabase
+          .from('capsule_media')
+          .select(
+            `
+            media_id,
+            media_bank (
+              id,
+              url,
+              media_type
+            )
+          `
+          )
+          .eq('capsule_id', capsule.id);
 
-      return {
-        ...capsule,
-        release_date: convertedDate,
-      };
-    });
+        if (mediaError) {
+          console.error(
+            `❌ Error fetching media for capsule ${capsule.id}:`,
+            mediaError.message
+          );
+          return { ...capsule, mediaFiles: [] };
+        }
 
-    console.log("Adjusted capsules data:", adjustedData);
-    res.status(200).json(adjustedData);
+        // ✅ Ensure media URLs are present
+        const mediaFiles = capsuleMedia
+          .map((entry) => entry.media_bank)
+          .filter((media) => media.url); // ✅ Filter out null URLs
+
+        return { ...capsule, mediaFiles };
+      })
+    );
+
+    res.status(200).json(enrichedCapsules);
   } catch (err) {
-    console.error("Error fetching capsules:", err.message);
-    res.status(500).json({ error: "Failed to fetch capsules." });
+    console.error('❌ Unexpected error fetching capsules:', err.message);
+    res.status(500).json({ error: 'Failed to fetch capsules.' });
   }
 });
 

@@ -70,13 +70,16 @@ const profileRoutes = require("./routes/profile");
 app.use("/profile", profileRoutes);
 
 const memoriesRoutes = require("./routes/memories"); // New route
-app.use("/memories", memoriesRoutes); 
+app.use("/api/memories", memoriesRoutes); 
 
 const capsuleRoutes = require("./routes/capsules"); // Adjust path to where capsules.js is located
 app.use("/api", capsuleRoutes); // Prefix all capsule routes with /api
 
 const mediaBankRouter = require("./routes/media_bank");
-app.use("/api/media-bank", mediaBankRouter);
+app.use("/api/media-bank", mediaBankRouter); 
+
+const avatarUploadRouter = require("./routes/avatar_upload");
+app.use("/api/avatar-upload", avatarUploadRouter);
 
 const getOrCreateUser = require("./routes/get_or_create_user"); 
 app.post("/users", getOrCreateUser);
