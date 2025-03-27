@@ -247,7 +247,7 @@ router.put('/capsules/:id', async (req, res) => {
   } = req.body;
 
   try {
-    // 1. Update the capsule
+    // 1. Update capsule
     const { error: updateError } = await supabase
       .from('capsules')
       .update({
@@ -265,13 +265,15 @@ router.put('/capsules/:id', async (req, res) => {
       return res.status(500).json({ error: 'Failed to update capsule.' });
     }
 
-    // 2. Optionally re-link media (delete old + insert new)
+    // 2. Delete old media links
     await supabase.from('capsule_media').delete().eq('capsule_id', capsuleId);
+
+    let mediaFiles = [];
 
     if (media_urls.length > 0) {
       const { data: mediaBank } = await supabase
         .from('media_bank')
-        .select('id, url')
+        .select('id, url, media_type')
         .in('url', media_urls);
 
       const mediaLinkData = mediaBank.map((media) => ({
@@ -280,9 +282,25 @@ router.put('/capsules/:id', async (req, res) => {
       }));
 
       await supabase.from('capsule_media').insert(mediaLinkData);
+
+      mediaFiles = mediaBank; // ✅ for return value
     }
 
-    return res.status(200).json({ message: 'Capsule updated successfully' });
+    // 3. Get updated capsule for response
+    const { data: capsuleData, error: fetchError } = await supabase
+      .from('capsules')
+      .select('*')
+      .eq('id', capsuleId)
+      .single();
+
+    if (fetchError) {
+      throw new Error('Could not fetch updated capsule');
+    }
+
+    return res.status(200).json({
+      ...capsuleData,
+      mediaFiles,
+    });
   } catch (err) {
     console.error('❌ Error in PUT /capsules/:id:', err.message);
     return res.status(500).json({ error: 'Internal server error.' });
