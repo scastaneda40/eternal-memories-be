@@ -14,29 +14,31 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-async function uploadFileToSupabase(fileBuffer, originalName) {
+async function uploadLocalFileToSupabase(localFilePath) {
   try {
-    const fileName = `${Date.now()}_${originalName}`;
-    const filePath = `uploads/${fileName}`;
+    if (!localFilePath.startsWith('file:///')) {
+      return localFilePath; // Already a public Supabase URL
+    }
+
+    const filePath = new URL(localFilePath).pathname;
+    const fileName = path.basename(filePath);
+    const fileBuffer = fs.readFileSync(filePath);
 
     const { data, error } = await supabase.storage
-      .from('eternal-moment-uploads') // ✅ Make sure this matches your storage bucket
-      .upload(filePath, fileBuffer, {
-        contentType: mime.lookup(originalName) || 'application/octet-stream',
+      .from('eternal-moment-uploads')
+      .upload(`uploads/${fileName}`, fileBuffer, {
+        contentType: mime.lookup(fileName) || 'application/octet-stream',
         upsert: false,
       });
 
     if (error) {
-      console.error(
-        `❌ Error uploading ${originalName} to Supabase:`,
-        error.message
-      );
+      console.error(`❌ Upload error: ${fileName}`, error.message);
       return null;
     }
 
-    return `https://lgyrbjjnuagmqcnmutfc.supabase.co/storage/v1/object/public/eternal-moment-uploads/${filePath}`;
+    return `https://lgyrbjjnuagmqcnmutfc.supabase.co/storage/v1/object/public/eternal-moment-uploads/uploads/${fileName}`;
   } catch (err) {
-    console.error('❌ Unexpected error uploading file:', err.message);
+    console.error('❌ Unexpected upload error:', err.message);
     return null;
   }
 }
@@ -247,7 +249,7 @@ router.put('/capsules/:id', async (req, res) => {
   } = req.body;
 
   try {
-    // 1. Update capsule
+    // Step 1: Update capsule metadata
     const { error: updateError } = await supabase
       .from('capsules')
       .update({
@@ -265,28 +267,55 @@ router.put('/capsules/:id', async (req, res) => {
       return res.status(500).json({ error: 'Failed to update capsule.' });
     }
 
-    // 2. Delete old media links
+    // Step 2: Delete existing capsule_media links
     await supabase.from('capsule_media').delete().eq('capsule_id', capsuleId);
 
-    let mediaFiles = [];
+    // Step 3: Upload any local media and get final list of URLs
+    const uploadedUrls = await Promise.all(
+      media_urls.map((url) => uploadLocalFileToSupabase(url))
+    );
 
-    if (media_urls.length > 0) {
-      const { data: mediaBank } = await supabase
+    const finalUrls = uploadedUrls.filter(Boolean);
+
+    // Step 4: Fetch existing media_bank entries
+    const { data: mediaBank } = await supabase
+      .from('media_bank')
+      .select('id, url, media_type')
+      .in('url', finalUrls);
+
+    // Step 5: Insert missing media into media_bank
+    const existingUrls = new Set(mediaBank.map((m) => m.url));
+    const missingUrls = finalUrls.filter((url) => !existingUrls.has(url));
+
+    let newMediaBankEntries = [];
+    for (const url of missingUrls) {
+      const mediaType =
+        url.endsWith('.mp4') || url.endsWith('.mov') ? 'video' : 'photo';
+
+      const { data, error } = await supabase
         .from('media_bank')
-        .select('id, url, media_type')
-        .in('url', media_urls);
+        .insert([{ url, media_type: mediaType, user_id }])
+        .select();
 
-      const mediaLinkData = mediaBank.map((media) => ({
-        capsule_id: capsuleId,
-        media_id: media.id,
-      }));
+      if (error) {
+        console.error('❌ Failed to insert into media_bank:', error.message);
+        continue;
+      }
 
-      await supabase.from('capsule_media').insert(mediaLinkData);
-
-      mediaFiles = mediaBank; // ✅ for return value
+      newMediaBankEntries.push(data[0]);
     }
 
-    // 3. Get updated capsule for response
+    const allMedia = [...mediaBank, ...newMediaBankEntries];
+
+    // Step 6: Link all media to capsule
+    const mediaLinkData = allMedia.map((media) => ({
+      capsule_id: capsuleId,
+      media_id: media.id,
+    }));
+
+    await supabase.from('capsule_media').insert(mediaLinkData);
+
+    // Step 7: Fetch and return updated capsule
     const { data: capsuleData, error: fetchError } = await supabase
       .from('capsules')
       .select('*')
@@ -299,7 +328,7 @@ router.put('/capsules/:id', async (req, res) => {
 
     return res.status(200).json({
       ...capsuleData,
-      mediaFiles,
+      mediaFiles: allMedia,
     });
   } catch (err) {
     console.error('❌ Error in PUT /capsules/:id:', err.message);
