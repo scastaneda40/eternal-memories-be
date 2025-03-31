@@ -9,6 +9,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+console.log('twilio phone', process.env.TWILIO_PHONE_NUMBER);
 // Configure SendGrid and Twilio
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const twilioClient = twilio(
