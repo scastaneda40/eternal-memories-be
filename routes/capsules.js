@@ -336,4 +336,58 @@ router.put('/capsules/:id', async (req, res) => {
   }
 });
 
+router.get('/capsules/:id', async (req, res) => {
+  const capsuleId = req.params.id;
+
+  try {
+    // Step 1: Get capsule
+    const { data: capsule, error: capsuleError } = await supabase
+      .from('capsules')
+      .select('*')
+      .eq('id', capsuleId)
+      .single();
+
+    if (capsuleError) {
+      console.error('❌ Capsule fetch error:', capsuleError.message);
+      return res.status(404).json({ error: 'Capsule not found.' });
+    }
+
+    // Step 2: Get associated media
+    const { data: mediaLinks, error: mediaError } = await supabase
+      .from('capsule_media')
+      .select(
+        `
+        media_bank (
+          id,
+          url,
+          media_type
+        )
+      `
+      )
+      .eq('capsule_id', capsuleId);
+
+    if (mediaError) {
+      console.error('❌ Capsule media fetch error:', mediaError.message);
+      return res.status(500).json({ error: 'Failed to fetch capsule media.' });
+    }
+
+    // Step 3: Extract image and video URLs
+    const media = mediaLinks.map((entry) => entry.media_bank).filter(Boolean);
+
+    const imageUrl = media.find((m) => m.media_type === 'photo')?.url || null;
+    const videoUrl = media.find((m) => m.media_type === 'video')?.url || null;
+
+    // Step 4: Return combined capsule
+    res.status(200).json({
+      ...capsule,
+      imageUrl,
+      videoUrl,
+      mediaFiles: media,
+    });
+  } catch (err) {
+    console.error('❌ Server error fetching capsule:', err.message);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
 module.exports = router;
