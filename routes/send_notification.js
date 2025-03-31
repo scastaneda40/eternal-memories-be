@@ -1,19 +1,20 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const sgMail = require("@sendgrid/mail");
-const twilio = require("twilio");
-const { createClient } = require("@supabase/supabase-js");
-
+const sgMail = require('@sendgrid/mail');
+const twilio = require('twilio');
+const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-
 // Configure SendGrid and Twilio
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
 // Function to validate phone numbers in E.164 format
 const validatePhoneNumber = (number) => /^\+?[1-9]\d{1,14}$/.test(number);
@@ -22,64 +23,64 @@ const validatePhoneNumber = (number) => /^\+?[1-9]\d{1,14}$/.test(number);
 const fetchCapsuleDetails = async (capsuleId) => {
   try {
     const { data: capsule, error: capsuleError } = await supabase
-      .from("capsules")
-      .select("*")
-      .eq("id", capsuleId)
+      .from('capsules')
+      .select('*')
+      .eq('id', capsuleId)
       .single();
 
     if (capsuleError) {
-      console.error("Error fetching capsule details:", capsuleError.message);
+      console.error('Error fetching capsule details:', capsuleError.message);
       return null;
     }
 
     const { data: capsuleMedia, error: mediaError } = await supabase
-      .from("capsule_media")
-      .select(`
+      .from('capsule_media')
+      .select(
+        `
         media_bank (
           id,
           url,
           name,
           media_type
         )
-      `)
-      .eq("capsule_id", capsuleId);
+      `
+      )
+      .eq('capsule_id', capsuleId);
 
     if (mediaError) {
-      console.error("Error fetching capsule media:", mediaError.message);
+      console.error('Error fetching capsule media:', mediaError.message);
       return null;
     }
 
     const mediaFiles = capsuleMedia.map((entry) => entry.media_bank);
-    console.log("Raw capsule media:", capsuleMedia);
+    console.log('Raw capsule media:', capsuleMedia);
 
     const images = mediaFiles
-      .filter((media) => media.media_type === "photo")
+      .filter((media) => media.media_type === 'photo')
       .map((media) => media.url);
 
     const videos = mediaFiles
-      .filter((media) => media.media_type === "video")
+      .filter((media) => media.media_type === 'video')
       .map((media) => media.url);
 
     const imageUrl = images[0] || null; // Use the first image if available
     const videoUrl = videos[0] || null; // Use the first video if available
 
-    console.log("Extracted images:", images);
-    console.log("Extracted videos:", videos);
+    console.log('Extracted images:', images);
+    console.log('Extracted videos:', videos);
 
     return { ...capsule, imageUrl, videoUrl, mediaFiles, images, videos };
   } catch (err) {
-    console.error("Unexpected error fetching capsule details:", err.message);
+    console.error('Unexpected error fetching capsule details:', err.message);
     return null;
   }
 };
 
-
-
 // Function to generate email HTML
 const generateEmailHtml = (capsule) => {
-  console.log("Generating email HTML for capsule:", capsule);
+  console.log('Generating email HTML for capsule:', capsule);
 
-  let mediaGrid = ""; // Default to no media grid
+  let mediaGrid = ''; // Default to no media grid
 
   // Extract the first image
   const primaryImage = [...new Set(capsule.images)][0];
@@ -100,32 +101,37 @@ const generateEmailHtml = (capsule) => {
       </h1>
       ${mediaGrid}
       <p style="font-size: 16px; color: #333; line-height: 1.5; margin-bottom: 20px; padding: 0;">
-        ${capsule.description || "Discover special memories curated just for you!"}
+        ${
+          capsule.description ||
+          'Discover special memories curated just for you!'
+        }
       </p>
-      <a href="${capsule.detailsPageUrl}" style="display: block; width: 200px; margin: 20px auto; text-align: center; padding: 10px; background-color: #19747E; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">View Capsule</a>
+      <a href="${
+        capsule.detailsPageUrl
+      }" style="display: block; width: 200px; margin: 20px auto; text-align: center; padding: 10px; background-color: #19747E; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">View Capsule</a>
     </div>
   `;
 };
 
-
-
 // Function to truncate SMS messages
 const truncateMessage = (message, limit = 800) => {
   if (message.length > limit) {
-    console.log(`Original message length: ${message.length}. Truncating to ${limit} characters.`);
-    return message.slice(0, limit - 3) + "..."; // Truncate and add ellipsis
+    console.log(
+      `Original message length: ${message.length}. Truncating to ${limit} characters.`
+    );
+    return message.slice(0, limit - 3) + '...'; // Truncate and add ellipsis
   }
   console.log(`Message length is within the limit: ${message.length}`);
   return message;
 };
 
-router.post("/send-notification", async (req, res) => {
+router.post('/send-notification', async (req, res) => {
   const { contacts, notificationType, capsule } = req.body;
 
   // Fetch dynamic capsule details
   const dynamicCapsuleDetails = await fetchCapsuleDetails(capsule.id);
   if (!dynamicCapsuleDetails) {
-    return res.status(404).send({ error: "Capsule not found." });
+    return res.status(404).send({ error: 'Capsule not found.' });
   }
 
   const capsuleDetails = {
@@ -137,59 +143,85 @@ router.post("/send-notification", async (req, res) => {
 
   try {
     // Send Emails
-    if (notificationType === "email" || notificationType === "both") {
+    if (notificationType === 'email' || notificationType === 'both') {
       const emailRecipients = contacts.filter((contact) => contact.email);
-      console.log("Email Recipients:", emailRecipients);
+      console.log('Email Recipients:', emailRecipients);
 
       const emailPromises = emailRecipients.map((contact) => {
-        console.log("Sending email to:", contact.email);
+        console.log('Sending email to:', contact.email);
 
         return sgMail.send({
           to: contact.email,
-          from: "stephen.castaneda40@gmail.com", // Replace with your verified sender email
-          subject: `Hi ${contact.name || "there"}, You're Invited to View a Capsule: ${capsuleDetails.title || "Special Memories"}`,
+          from: 'stephen.castaneda40@gmail.com', // Replace with your verified sender email
+          subject: `Hi ${
+            contact.name || 'there'
+          }, You're Invited to View a Capsule: ${
+            capsuleDetails.title || 'Special Memories'
+          }`,
           html: generateEmailHtml(capsuleDetails), // Pass updated capsuleDetails
         });
       });
 
       await Promise.all(emailPromises);
     }
-    console.log(generateEmailHtml(capsuleDetails))
+    console.log(generateEmailHtml(capsuleDetails));
     // Send SMS
     // Send SMS
-if (notificationType === "text" || notificationType === "both") {
-  const smsRecipients = contacts.filter(
-    (contact) => contact.phone && validatePhoneNumber(contact.phone)
-  );
-  console.log("Valid SMS Recipients:", smsRecipients);
+    if (notificationType === 'text' || notificationType === 'both') {
+      const smsRecipients = contacts.filter(
+        (contact) => contact.phone && validatePhoneNumber(contact.phone)
+      );
+      console.log('Valid SMS Recipients:', smsRecipients);
 
-  const smsPromises = smsRecipients.map((contact) => {
-    const rawMessage = `Hi ${contact.name || "there"}, You're Invited to View a Capsule: ${capsuleDetails.title}. ${capsuleDetails.description} Celebrate and relive the memories here: ${capsuleDetails.detailsPageUrl}`;
-    const message = truncateMessage(rawMessage);
+      const smsPromises = smsRecipients.map((contact) => {
+        const rawMessage = `Hi ${
+          contact.name || 'there'
+        }, You're Invited to View a Capsule: ${capsuleDetails.title}. ${
+          capsuleDetails.description
+        } Celebrate and relive the memories here: ${
+          capsuleDetails.detailsPageUrl
+        }`;
+        const message = truncateMessage(rawMessage);
 
-    console.log(`Final SMS message length for ${contact.phone}: ${message.length}`);
-    console.log(`Final SMS content: ${message}`);
+        console.log(
+          `Final SMS message length for ${contact.phone}: ${message.length}`
+        );
+        console.log(`Final SMS content: ${message}`);
 
-    // Select the first image for MMS (if available)
-    const mediaUrl = capsuleDetails.images[0] || null;
+        // Select the first image for MMS (if available)
+        const mediaUrl = capsuleDetails.images[0] || null;
 
-    return twilioClient.messages.create({
-      body: message,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: contact.phone,
-      mediaUrl: mediaUrl ? [mediaUrl] : undefined, // Include image if available
-    });
-  });
+        return twilioClient.messages.create({
+          body: message,
+          from: process.env.TWILIO_PHONE_NUMBER,
+          to: contact.phone,
+          mediaUrl: mediaUrl ? [mediaUrl] : undefined, // Include image if available
+        });
+      });
 
-  await Promise.all(smsPromises);
-  console.log("Text messages sent successfully.");
-}
+      for (const promise of smsPromises) {
+        try {
+          await promise;
+        } catch (smsErr) {
+          console.error(
+            '❌ Failed to send SMS to one recipient:',
+            smsErr.message,
+            smsErr
+          );
+        }
+      }
+      console.log('Text messages sent successfully.');
+    }
 
-    console.log("Notifications sent successfully.");
+    console.log('Notifications sent successfully.');
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error("Error occurred while sending notifications:", error.message, error);
-    res.status(500).send({ error: "Failed to send notifications." });
+    console.error(
+      'Error occurred while sending notifications:',
+      error.message,
+      error
+    );
+    res.status(500).send({ error: 'Failed to send notifications.' });
   }
 });
 
