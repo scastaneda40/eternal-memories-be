@@ -194,7 +194,7 @@ router.post('/send-notification', async (req, res) => {
 
         return twilioClient.messages.create({
           body: message,
-          from: process.env.TWILIO_PHONE_NUMBER,
+          from: '+16199401961',
           to: contact.phone,
           mediaUrl: mediaUrl ? [mediaUrl] : undefined, // Include image if available
         });
