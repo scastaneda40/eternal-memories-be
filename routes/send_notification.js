@@ -129,101 +129,109 @@ const truncateMessage = (message, limit = 800) => {
 router.post('/send-notification', async (req, res) => {
   const { contacts, notificationType, capsule } = req.body;
 
-  // Fetch dynamic capsule details
-  const dynamicCapsuleDetails = await fetchCapsuleDetails(capsule.id);
-  if (!dynamicCapsuleDetails) {
+  // Optional: validate capsule exists
+  const capsuleDetails = await fetchCapsuleDetails(capsule.id);
+  if (!capsuleDetails) {
     return res.status(404).send({ error: 'Capsule not found.' });
   }
 
-  const capsuleDetails = {
-    ...capsule,
-    ...dynamicCapsuleDetails,
-    images: dynamicCapsuleDetails.images || [], // Include extracted images
-    videos: dynamicCapsuleDetails.videos || [], // Include extracted videos
+  // Combine capsule and contact info into one payload
+  const fullPayload = {
+    capsuleId: capsule.id,
+    title: capsule.title,
+    description: capsule.description,
+    imageUrl: capsule.imageUrl || null,
+    videoUrl: capsule.videoUrl || null,
+    detailsPageUrl: capsule.detailsPageUrl,
+    contacts,
+    notificationType,
   };
 
   try {
-    // Send Emails
-    if (notificationType === 'email' || notificationType === 'both') {
-      const emailRecipients = contacts.filter((contact) => contact.email);
-      console.log('Email Recipients:', emailRecipients);
+    const { error } = await supabase.from('scheduled_notifications').insert([
+      {
+        capsule_id: capsule.id,
+        contacts, // Optional: keep for direct access
+        notification_type: notificationType, // must match your enum ('email', 'text', 'both')
+        sent: false,
+        payload: fullPayload, // 💾 Store full payload for later use
+      },
+    ]);
 
-      const emailPromises = emailRecipients.map((contact) => {
-        console.log('Sending email to:', contact.email);
-
-        return sgMail.send({
-          to: contact.email,
-          from: 'stephen.castaneda40@gmail.com', // Replace with your verified sender email
-          subject: `Hi ${
-            contact.name || 'there'
-          }, You're Invited to View a Capsule: ${
-            capsuleDetails.title || 'Special Memories'
-          }`,
-          html: generateEmailHtml(capsuleDetails), // Pass updated capsuleDetails
-        });
-      });
-
-      await Promise.all(emailPromises);
-    }
-    console.log(generateEmailHtml(capsuleDetails));
-    // Send SMS
-    // Send SMS
-    if (notificationType === 'text' || notificationType === 'both') {
-      const smsRecipients = contacts.filter(
-        (contact) => contact.phone && validatePhoneNumber(contact.phone)
-      );
-      console.log('Valid SMS Recipients:', smsRecipients);
-
-      const smsPromises = smsRecipients.map((contact) => {
-        const rawMessage = `Hi ${
-          contact.name || 'there'
-        }, You're Invited to View a Capsule: ${capsuleDetails.title}. ${
-          capsuleDetails.description
-        } Celebrate and relive the memories here: ${
-          capsuleDetails.detailsPageUrl
-        }`;
-        const message = truncateMessage(rawMessage);
-
-        console.log(
-          `Final SMS message length for ${contact.phone}: ${message.length}`
-        );
-        console.log(`Final SMS content: ${message}`);
-
-        // Select the first image for MMS (if available)
-        const mediaUrl = capsuleDetails.images[0] || null;
-
-        return twilioClient.messages.create({
-          body: message,
-          from: process.env.TWILIO_PHONE_NUMBER,
-          to: contact.phone,
-          mediaUrl: mediaUrl ? [mediaUrl] : undefined, // Include image if available
-        });
-      });
-
-      for (const promise of smsPromises) {
-        try {
-          await promise;
-        } catch (smsErr) {
-          console.error(
-            '❌ Failed to send SMS to one recipient:',
-            smsErr.message,
-            smsErr
-          );
-        }
-      }
-      console.log('Text messages sent successfully.');
+    if (error) {
+      console.error('Failed to schedule notification:', error.message);
+      return res
+        .status(500)
+        .send({ error: 'Failed to schedule notification.' });
     }
 
-    console.log('Notifications sent successfully.');
+    console.log('✅ Notification scheduled for release day.');
     res.status(200).send({ success: true });
   } catch (error) {
-    console.error(
-      'Error occurred while sending notifications:',
-      error.message,
-      error
-    );
-    res.status(500).send({ error: 'Failed to send notifications.' });
+    console.error('Unexpected error:', error.message);
+    res.status(500).send({ error: 'Failed to schedule notification.' });
   }
+});
+
+router.post('/run-scheduled-notifications', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).send({ error: 'Unauthorized' });
+  }
+  const today = new Date().toISOString().split('T')[0];
+
+  const { data: notifications, error } = await supabase
+    .from('scheduled_notifications')
+    .select('*')
+    .eq('sent', false);
+
+  if (error) {
+    console.error('Error fetching scheduled notifications:', error.message);
+    return res
+      .status(500)
+      .send({ error: 'Error fetching scheduled notifications' });
+  }
+
+  for (const notif of notifications) {
+    const capsule = await fetchCapsuleDetails(notif.capsule_id);
+
+    if (!capsule) continue;
+
+    // Only send if today is the capsule release day
+    const releaseDate = new Date(capsule.release_date)
+      .toISOString()
+      .split('T')[0];
+    if (releaseDate !== today) continue;
+
+    const { contacts, notification_type } = notif;
+
+    if (notification_type === 'email' || notification_type === 'both') {
+      const emailRecipients = contacts.filter((c) => c.email);
+
+      for (const contact of emailRecipients) {
+        try {
+          await sgMail.send({
+            to: contact.email,
+            from: 'stephen.castaneda40@gmail.com',
+            subject: `Hi ${contact.name || 'there'}, a Capsule is ready!`,
+            html: generateEmailHtml(capsule),
+          });
+        } catch (err) {
+          console.error(`Failed to email ${contact.email}:`, err.message);
+        }
+      }
+    }
+
+    // future: SMS logic here...
+
+    // Mark as sent
+    await supabase
+      .from('scheduled_notifications')
+      .update({ sent: true })
+      .eq('id', notif.id);
+  }
+
+  res.status(200).send({ success: true });
 });
 
 module.exports = router;

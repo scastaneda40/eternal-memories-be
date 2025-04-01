@@ -71,6 +71,9 @@ const profileRoutes = require('./routes/profile');
 
 app.use('/profile', profileRoutes);
 
+const cronRoutes = require('./routes/cron');
+app.use('/api', cronRoutes);
+
 const memoriesRoutes = require('./routes/memories'); // New route
 app.use('/api/memories', memoriesRoutes);
 
